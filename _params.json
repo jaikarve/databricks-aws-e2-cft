@@ -1,0 +1,58 @@
+[
+    {
+        "ParameterKey": "AccountId",
+        "ParameterValue": "<E2_Account_ID>"
+    },
+    {
+        "ParameterKey": "PricingTier",
+        "ParameterValue": "ENTERPRISE"
+    },
+    {
+        "ParameterKey": "DeploymentName",
+        "ParameterValue": "<DEPLOYMENT_NAME>"
+    },
+    {
+        "ParameterKey": "KeyUseCases",
+        "ParameterValue": "BOTH"
+    },
+    {
+        "ParameterKey": "KeyReuseForClusterVolumes",
+        "ParameterValue": "True"
+    },
+    {
+        "ParameterKey": "AWSRegion",
+        "ParameterValue": "us-east-1"
+    },
+    {
+        "ParameterKey": "BucketName",
+        "ParameterValue": "<ROOT_S3_BUCKET_NAME>"
+    },
+    {
+        "ParameterKey": "Username",
+        "ParameterValue": "<INITIAL_DATABRICKS_USER>"
+    },
+    {
+        "ParameterKey": "Password",
+        "ParameterValue": "<INITIAL_PASSWORD>"
+    },
+    {
+        "ParameterKey": "IAMRoleARN",
+        "ParameterValue": "<CROSS_ACCOUNT_IAM_ROLE_ARN"
+    },
+    {
+        "ParameterKey": "KeyArn",
+        "ParameterValue": "<KMS_KEY_ARN>"
+    },
+    {
+        "ParameterKey": "KeyAlias",
+        "ParameterValue": "<KMS_KEY_ALIAS>"
+    },
+    {
+        "ParameterKey": "KeyUseCases",
+        "ParameterValue": "BOTH"
+    },
+    {
+        "ParameterKey": "KeyReuseForClusterVolumes",
+        "ParameterValue": "True"
+    }
+]
