@@ -903,7 +903,7 @@ Resources:
         - '-'
         - - !Ref 'DeploymentName'
           - 'network'
-      vpc_id: !If [HasExistingVPC, VPCID, !Ref customerManagedVPC]
+      vpc_id: !If [HasExistingVPC, !Ref VPCID, !Ref customerManagedVPC]
       subnet_ids: !If [HasExistingVPC, !Ref SubnetIDs, !Join [',', [!Ref privateSubnet1, !Ref privateSubnet2]]]
       security_group_ids: !If [HasExistingVPC, !Ref SecurityGroupIDs, !Ref SecurityGroup]
       encodedbase64: 
@@ -967,6 +967,20 @@ Resources:
       Code:
         S3Bucket: !Ref 'LambdaZipsBucket'
         S3Key: !Sub '${QSS3KeyPrefix}functions/packages/lambda.zip' 
+
+  updateKMSkeysFunction:
+    Condition: IsKMSKeyProvided
+    DependsOn: CopyZips
+    Type: AWS::Lambda::Function
+    Properties:
+      Description: UUpdate CMK policy document for storage.
+      Handler: update_custommanaged_cmk_policy.handler
+      Runtime: python3.8
+      Role: !GetAtt 'functionRole.Arn'
+      Timeout: 60
+      Code:
+        S3Bucket: !Ref 'LambdaZipsBucket'
+        S3Key: !Sub '${QSS3KeyPrefix}functions/packages/lambda.zip'
 
 # IAM Role for lambda function execution
   functionRole:
