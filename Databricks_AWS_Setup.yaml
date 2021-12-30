@@ -20,7 +20,8 @@ Metadata:
           default: "IAM role and S3 bucket configuration"
         Parameters:
           - TagValue
-          - IAMRoleARN
+          - ExistingCrossAccountIAMRoleARN
+          - NewCrossAccountIAMRoleName
           - BucketName
       - Label:
           default: "(Optional) Customer managed key configuration for notebooks (requires the enterprise tier)"
@@ -46,7 +47,7 @@ Metadata:
       DeploymentName:
         default: Workspace deployment name
       AWSRegion:
-        default: AWS Region of the Databricks workspace 
+        default: AWS Region of the Databricks workspace
       HIPAAparm:
         default: HIPAA tier account
       TagValue:
@@ -69,15 +70,48 @@ Metadata:
         default: Quick Start S3 key prefix
 
 Outputs:
-  SubnetIDs:
-    Description: Comma separated list of subnets
-    Value: !Join
-      - ','
-      - - !Ref privateSubnet1
-        - !Ref privateSubnet2
+  CustomerManagedVPCIAMRoleARN:
+    Description: ARN of the customer managed cross-account IAM role.
+    Condition: CreateCrossAccountIAMRole
+    Value: !Ref accessRoleCustomerManagedVPC
   S3BucketName:
     Description: Name of the S3 root bucket.
     Value: !Ref assetsS3Bucket
+  CustomerManagedKeyId:
+    Description: ID of the customer managed key object.
+    Condition: IsKMSKeyProvided
+    Value: !GetAtt createCustomerManagedKey.CustomerManagedKeyId
+  CredentialsId:
+    Description: Credential ID.
+    Value: !GetAtt createCredentials.CredentialsId
+  ExternalId:
+    Description: Databricks external ID.
+    Value: !GetAtt createCredentials.ExternalId
+  NetworkId:
+    Description: Databricks network ID.
+    Value: !GetAtt createNetworks.NetworkId
+  StorageConfigId:
+    Description: Storage configuration ID.
+    Value: !GetAtt createStorageConfiguration.StorageConfigId
+  WorkspaceURL:
+    Description: URL of the workspace.
+    Value: !Join
+      - ''
+      - - 'https://'
+        - !GetAtt createWorkspace.DeploymentName
+        - '.cloud.databricks.com'
+  WorkspaceStatus:
+    Description: Status of the requested workspace.
+    Value: !GetAtt createWorkspace.WorkspaceStatus
+  WorkspaceStatusMessage:
+    Description: Detailed status description of the requested workspace.
+    Value: !GetAtt createWorkspace.WorkspaceStatusMsg
+  PricingTier:
+    Description: Pricing tier of the workspace. For more information, see https://databricks.com/product/aws-pricing.
+    Value: !GetAtt createWorkspace.PricingTier
+  ClusterPolicyID:
+    Description: Unique identifier for the cluster policy.
+    Value: !GetAtt createWorkspace.ClusterPolicyId
 
 Parameters:
   AccountId:
@@ -139,10 +173,14 @@ Parameters:
     MinLength: '1'
     Type: String
     Default: databricks-quickstart-cloud-formation
-  IAMRoleARN: 
+  ExistingCrossAccountIAMRoleARN: 
+    Description: "Enter the ARN of an existing cross-account IAM role, ensuring it meets the requirements here: https://docs.databricks.com/administration-guide/account-api/iam-role.html"
+    Type: String
+    Default: ''
+  NewCrossAccountIAMRoleName: 
     Description: "Enter a unique cross-account IAM role name. For more information, see https://docs.aws.amazon.com/IAM/latest/APIReference/API_CreateRole.html."
     Type: String
-    MinLength: '1'
+    Default: ''
   BucketName:
     Description: "Name of your S3 root bucket. Enter only alphanumeric characters. For more information, see https://docs.aws.amazon.com/AmazonS3/latest/dev/BucketRestrictions.html."
     AllowedPattern: '(?=^.{3,63}$)(?!xn--)([a-z0-9](?:[a-z0-9-]*)[a-z0-9])$'
@@ -150,6 +188,18 @@ Parameters:
     MaxLength: '63'
     Type: String
     ConstraintDescription: Quick Start bucket name can include numbers, lowercase letters, uppercase letters, and hyphens (-). It cannot start or end with a hyphen (-).
+  VPCID:
+    Description: "ID of your VPC in which to create the new workspace. Only enter a value if you use the customer managed VPC feature. The format is vpc-xxxxxxxxxxxxxxxx. If unspecified, Databricks creates a new workspace in a new VPC. For more information, see https://docs.databricks.com/administration-guide/cloud-configurations/aws/customer-managed-vpc.html."
+    Type: String
+    Default: ''
+  SecurityGroupIDs:
+    Description: "Name of one or more VPC security groups. Only enter a value if you set VPCID. The format is sg-xxxxxxxxxxxxxxxxx. Use commas to separate multiple IDs. Databricks must have access to at least one security group but no more than five. You can reuse existing security groups. For more information, see https://docs.databricks.com/administration-guide/cloud-configurations/aws/customer-managed-vpc.html."
+    Type: String
+    Default: '' 
+  SubnetIDs:
+    Description: "Enter at least two private subnet IDs [i.e. subnet-xxxx,subnet-yyyy]. Only enter a value if you set VPCID. Subnets cannot be shared with other workspaces or non-Databricks resources. Each subnet must be private, have outbound access, and a netmask between /17 and /25. The NAT gateway must have its own subnet that routes 0.0.0.0/0 traffic to an internet gateway. For more information, see https://docs.databricks.com/administration-guide/cloud-configurations/aws/customer-managed-vpc.html."
+    Type: String
+    Default: ''
   KeyArn:
     Description: "AWS KMS key ARN to encrypt and decrypt workspace notebooks in the control plane. Only enter a value if you use the customer managed key for notebooks. For more information, see https://docs.databricks.com/security/keys/customer-managed-keys-notebook-aws.html."
     Type: String
@@ -173,13 +223,19 @@ Parameters:
     MaxLength: '63'
     ConstraintDescription: Quick Start bucket name can include numbers, lowercase letters, uppercase letters, and hyphens (-). It cannot start or end with a hyphen (-).
   QSS3KeyPrefix:
-    Description: "S3 key prefix to simulate a directory for your Quick Start assets. Use this if you want to customize the Quick Start. The prefix can include numbers, lowercase letters, uppercase letters, hyphens (-), and forward slashes (/). For more information, see https://docs.aws.amazon.com/AmazonS3/latest/dev/UsingMetadata.html."
+    Description: "S3 key prefix to simulate a directory for your deployment assets.  The prefix can include numbers, lowercase letters, uppercase letters, hyphens (-), and forward slashes (/). For more information, see https://docs.aws.amazon.com/AmazonS3/latest/dev/UsingMetadata.html."
     AllowedPattern: '^[0-9a-zA-Z-/]*$'
     Type: String
     Default: quickstart-databricks-unified-data-analytics-platform/
   
 
 Conditions:
+# Set condition when VPC ID is provided by the user
+  HasExistingVPC: !Not [!Equals [!Ref VPCID, '']]
+# Set condition when VPC ID is NOT provided by the user
+  CreateVPC: !Equals [!Ref VPCID, '']
+# Set condition when cross-account role should be created by this template
+  CreateCrossAccountIAMRole: !Equals [!Ref ExistingCrossAccountIAMRoleARN, '']
 # Set condition when AWS KMS key ID is provided by the user. 
   IsKMSKeyProvided: !Not [!Equals [!Ref KeyArn, '']]
 # Test for STORAGE CMK use case
@@ -191,14 +247,30 @@ Rules:
     Assertions:
     - Assert: !Equals [!Ref AWSRegion, !Ref 'AWS::Region']
       AssertDescription: Region from the AWS Management Console must match the selected Region from the drop-down menu.
-
-# 2. HIPAA supported regions, if HIPAA flaf is set
-  SupportedHipaaRegions:
-    RuleCondition: !Equals [!Ref HIPAAparm, 'Yes']
+# 2. Ensure that an IAM role name is given when no ARN is provided for an existing cross account IAM role.
+  ExistingCrossAccountIAMRole:
+    RuleCondition: !Not [!Equals [!Ref ExistingCrossAccountIAMRoleARN, '']]
     Assertions:
-    - Assert: !Contains [['us-east-1', 'us-east-2', 'ca-central-1'], !Ref AWSRegion]
-      AssertDescription: Creates a workspace for only HIPAA tier accounts in the us-east-1, us-east-2, and ca-central-1 Regions.
-
+    - Assert: !Equals [!Ref NewCrossAccountIAMRoleName, '']
+      AssertDescription: Name for cross-account IAM role must be given if an existing cross-account IAM Role ARN is not provided.
+# 3. Ensure that an existing cross-account IAM role ARN is not supplied when an IAM role name is given to create the cross-account role.
+  CreateCrossAccountIAMRole:
+    RuleCondition: !Not [!Equals [!Ref NewCrossAccountIAMRoleName, '']]
+    Assertions:
+    - Assert: !Equals [!Ref ExistingCrossAccountIAMRoleARN, '']
+      AssertDescription: Existing IAM Role ARN should not be given when a new cross-account role name is provided.
+# 4. Ensure that the security group ID is supplied when an existing VPC ID is provided.
+  SecurityGroupIDExists:
+    RuleCondition: !Not [!Equals [!Ref VPCID, '']]
+    Assertions:
+    - Assert: !Not [!Equals [!Ref SecurityGroupIDs, '']]
+      AssertDescription: Security Group ID should be supplied when VPC ID is provided.
+# 5. Ensure that subnet IDs are supplied when an existing VPC ID is provided.
+  SubnetIDsExist:
+    RuleCondition: !Not [!Equals [!Ref VPCID, '']]
+    Assertions:
+    - Assert: !Not [!Equals [!Ref SubnetIDs, '']]
+      AssertDescription: Subnet IDs should be supplied when VPC ID is provided.
 # 4. Optional Section. Ensure the KeyARN is provided when a use case is specified.
   KeyUseCases1:
     RuleCondition: !Not [!Equals [!Ref KeyArn, '']]
@@ -219,130 +291,184 @@ Rules:
     Assertions: 
     - Assert: !Equals [!Ref KeyReuseForClusterVolumes, '']
       AssertDescription: Value must be null if MANAGED_SERVICES is specified.
-
-# 5. Assertion rule to prevent changing the QuickStart Bucket name and Prefix parameter
-# ***********************************************************************************************************************
-# This rule must be COMMENTED if it is intended to clone the git repo to make modifications prior to promote the changes
-# ***********************************************************************************************************************
-  AWSQuickStartGitParametersSettings:
-    Assertions:
-    - Assert: !Equals ['aws-quickstart', !Ref QSS3BucketName]
-      AssertDescription: 'QSS3BucketName must be aws-quickstart.'
-    - Assert: !Equals ['quickstart-databricks-unified-data-analytics-platform/', !Ref QSS3KeyPrefix]
-      AssertDescription: 'QSS3KeyPrefix must be quickstart-databricks-unified-data-analytics-platform/.'
         
 Resources:
+#
+#  THE FOLLOWING RESOURCES ONLY APPLY IF THIS TEMPLATE IS CONFIGURING THE VPC
+#
+# Creates the VPC
   customerManagedVPC:
     Type: 'AWS::EC2::VPC'
+    Condition: CreateVPC
     Properties:
       CidrBlock: 10.0.0.0/16
       EnableDnsHostnames: 'true'
       EnableDnsSupport: 'true'
+
+# Creates private subnet for deployment of EC2 compute, note that CidrBlock and AZ can be changed.
   privateSubnet1:
     Type: AWS::EC2::Subnet
+    Condition: CreateVPC
     Properties:
       VpcId: !Ref customerManagedVPC
       AvailabilityZone: "us-east-1a"
       CidrBlock: 10.0.0.0/24
+
+# Creates private subnet for deployment of EC2 compute, note that CidrBlock and AZ can be changed.
   privateSubnet2:
     Type: AWS::EC2::Subnet
+    Condition: CreateVPC
     Properties:
       CidrBlock: 10.0.1.0/24
       VpcId: !Ref customerManagedVPC
       AvailabilityZone: "us-east-1b"
+
+# Public subnet is required for outbound internet access for installation of external libraries (i.e. Maven, PyPI, CRAN)
   publicSubnet:
     Type: AWS::EC2::Subnet
+    Condition: CreateVPC
     Properties:
       CidrBlock: 10.0.2.0/24
       VpcId: !Ref customerManagedVPC
       AvailabilityZone: "us-east-1c"
       MapPublicIpOnLaunch: 'true'
+
+# Internet Gateway that is required to route outbound requests
   internetGateway:
     Type: AWS::EC2::InternetGateway
+    Condition: CreateVPC
+
+# Attaches Internet Gateway to VPC
   internetGatewayAttachment:
     Type: AWS::EC2::VPCGatewayAttachment
+    Condition: CreateVPC
     Properties:
       InternetGatewayId: !Ref internetGateway
       VpcId: !Ref customerManagedVPC
+
+# Elastic IP address for the NAT Gateway
   NatGateway1EIP:
     Type: AWS::EC2::EIP
+    Condition: CreateVPC
     DependsOn: internetGatewayAttachment
     Properties:
       Domain: vpc
+
+# Specifies a network address translation (NAT) gateway in the specified subnet.
   NatGateway1:
     Type: AWS::EC2::NatGateway
+    Condition: CreateVPC
     Properties:
       AllocationId: !GetAtt NatGateway1EIP.AllocationId
       SubnetId: !Ref publicSubnet
+
+# RouteTable for public access
   PublicRouteTable:
     Type: AWS::EC2::RouteTable
+    Condition: CreateVPC
     Properties:
       VpcId: !Ref customerManagedVPC
+
+# Routtes all outbound public traffic to the internet gateway
   DefaultPublicRoute:
     Type: AWS::EC2::Route
+    Condition: CreateVPC
     DependsOn: internetGatewayAttachment
     Properties:
       RouteTableId: !Ref PublicRouteTable
       DestinationCidrBlock: 0.0.0.0/0
       GatewayId: !Ref internetGateway
+
+# Associates Route table with public subnet for outbound public traffic
   PublicSubnetRouteTableAssociation:
     Type: AWS::EC2::SubnetRouteTableAssociation
+    Condition: CreateVPC
     Properties:
       RouteTableId: !Ref PublicRouteTable
       SubnetId: !Ref publicSubnet
+
+# Private Route Table for private subnets
   PrivateRouteTable1:
     Type: AWS::EC2::RouteTable
+    Condition: CreateVPC
     Properties:
       VpcId: !Ref customerManagedVPC
+
+# Private Route, routes public traffic to the Nat Gateway
   DefaultPrivateRoute1:
     Type: AWS::EC2::Route
+    Condition: CreateVPC
     Properties:
       RouteTableId: !Ref PrivateRouteTable1
       DestinationCidrBlock: 0.0.0.0/0
       NatGatewayId: !Ref NatGateway1
+
+# Associate RouteTable with private subnet
   PrivateSubnet1RouteTableAssociation:
     Type: AWS::EC2::SubnetRouteTableAssociation
+    Condition: CreateVPC
     Properties:
       RouteTableId: !Ref PrivateRouteTable1
       SubnetId: !Ref privateSubnet1
+
+# Associate RouteTable with private subnet
   PrivateSubnet2RouteTableAssociation:
     Type: AWS::EC2::SubnetRouteTableAssociation
+    Condition: CreateVPC
     Properties:
       RouteTableId: !Ref PrivateRouteTable1
       SubnetId: !Ref privateSubnet2
+
+# Security Group
   SecurityGroup:
     Type: AWS::EC2::SecurityGroup
+    Condition: CreateVPC
     Properties:
       VpcId: !Ref customerManagedVPC
       GroupDescription: Security group for Databricks E2 deployment
+
+# Security Group Ingress, according to the following: https://docs.databricks.com/administration-guide/cloud-configurations/aws/customer-managed-vpc.html#security-groups
   SecurityGroupIngressTcp:
     Type: AWS::EC2::SecurityGroupIngress
+    Condition: CreateVPC
     Properties:
       GroupId: !Ref SecurityGroup
       SourceSecurityGroupId: !Ref SecurityGroup
       IpProtocol: tcp
       FromPort: 0
       ToPort: 65535
+
+# Security group Ingress, according to the following: https://docs.databricks.com/administration-guide/cloud-configurations/aws/customer-managed-vpc.html#security-groups
   SecurityGroupIngressUdp:
     Type: AWS::EC2::SecurityGroupIngress
+    Condition: CreateVPC
     Properties:
       GroupId: !Ref SecurityGroup
       SourceSecurityGroupId: !Ref SecurityGroup
       IpProtocol: udp
       FromPort: 0
       ToPort: 65535
+
+# Security Group Egress, according to the following: https://docs.databricks.com/administration-guide/cloud-configurations/aws/customer-managed-vpc.html#security-groups
   SecurityGroupEgressAll:
     Type: AWS::EC2::SecurityGroupEgress
+    Condition: CreateVPC
     Properties:
       GroupId: !Ref SecurityGroup
       CidrIp: 0.0.0.0/0
       IpProtocol: -1
+
+# Network ACL
   NetworkAcl:
     Type: AWS::EC2::NetworkAcl
+    Condition: CreateVPC
     Properties:
       VpcId: !Ref customerManagedVPC
+
+# Network ACL Entry, adhering to the following: https://docs.databricks.com/administration-guide/cloud-configurations/aws/customer-managed-vpc.html#subnet-level-network-acls
   NetworkAclEntryInboundAllow:
     Type: AWS::EC2::NetworkAclEntry
+    Condition: CreateVPC
     Properties:
       Egress: "false"
       CidrBlock: 0.0.0.0/0
@@ -350,8 +476,11 @@ Resources:
       RuleNumber: 100
       RuleAction: allow
       NetworkAclId: !Ref NetworkAcl
+
+# Network ACL Entry, adhering to the following: https://docs.databricks.com/administration-guide/cloud-configurations/aws/customer-managed-vpc.html#subnet-level-network-acls
   NetworkAclEntryOutboundAllow:
     Type: AWS::EC2::NetworkAclEntry
+    Condition: CreateVPC
     Properties:
       Egress: "true"
       CidrBlock: 0.0.0.0/0
@@ -359,21 +488,33 @@ Resources:
       RuleNumber: 100
       RuleAction: allow
       NetworkAclId: !Ref NetworkAcl
+
+# Associate Subnet Network ACL with subnet
   SubnetNetworkAclNAT:
     Type: AWS::EC2::SubnetNetworkAclAssociation
+    Condition: CreateVPC
     Properties:
       NetworkAclId: !Ref NetworkAcl
       SubnetId: !Ref publicSubnet
+
+# Associate SubnetNetwork ACL with subnet
   SubnetNetworkAclPrivateSubnet1:
     Type: AWS::EC2::SubnetNetworkAclAssociation
+    Condition: CreateVPC
     Properties:
       NetworkAclId: !Ref NetworkAcl
       SubnetId: !Ref privateSubnet1
+
   SubnetNetworkAclPrivateSubnet2:
     Type: AWS::EC2::SubnetNetworkAclAssociation
+    Condition: CreateVPC
     Properties:
       NetworkAclId: !Ref NetworkAcl
       SubnetId: !Ref privateSubnet2
+
+#
+# THE FOLLOWING RESOURCES ARE USED FOR PRIVATELINK
+#
   #VPCEndpointS3:
    # Type: AWS::EC2::VPCEndpoint
     #Properties:
@@ -470,10 +611,184 @@ Resources:
       #IpProtocol: tcp
       #FromPort: 6666
       #ToPort: 6666
-  
-  # Cross-account access role for Databricks-created and managed VPC  
-  # Cross-account access role for customer managed VPC
-  # S3 root bucket requirements
+   
+#
+# THE FOLLOWING RESOURCE ONLY APPLIES IF YOU WANT THIS TEMPLATE TO CREATE THE CROSS-ACCOUNT IAM ROLE.
+#
+
+# Create cross-account IAM role, according to the following: https://docs.databricks.com/administration-guide/account-api/iam-role.html
+  accessRoleCustomerManagedVPC:
+    Type: 'AWS::IAM::Role'
+    Metadata:
+      cfn-lint:
+        config:
+          ignore_checks:
+            - EIAMPolicyWildcardResource
+          ignore_reasons:
+            EIAMPolicyWildcardResource: "Must manage databricks workspaces."
+    Condition: CreateCrossAccountIAMRole
+    Properties:
+      RoleName: !Ref NewCrossAccountIAMRoleName
+      AssumeRolePolicyDocument:
+        Statement:
+          - Action: 'sts:AssumeRole'
+            Condition:
+               StringEquals: 
+                'sts:ExternalId': !Sub '${AccountId}'
+            Effect: Allow
+            Principal:
+              AWS: !Join 
+                - ''
+                - - 'arn:aws:iam::'
+                  - '414351767826'
+                  - ':root'
+            Sid: ''
+        Version: 2012-10-17
+      Path: /
+      Policies:
+        - PolicyDocument:
+            Statement:
+              - Sid: NonResourceBasedPermissions
+                Effect: Allow
+                Action:
+                  - 'ec2:CancelSpotInstanceRequests'
+                  - 'ec2:DescribeAvailabilityZones'
+                  - 'ec2:DescribeIamInstanceProfileAssociations'
+                  - 'ec2:DescribeInstanceStatus'
+                  - 'ec2:DescribeInstances'
+                  - 'ec2:DescribeInternetGateways'
+                  - 'ec2:DescribeNatGateways'
+                  - 'ec2:DescribeNetworkAcls'
+                  - 'ec2:DescribePlacementGroups'
+                  - 'ec2:DescribePrefixLists'
+                  - 'ec2:DescribeReservedInstancesOfferings'
+                  - 'ec2:DescribeRouteTables'
+                  - 'ec2:DescribeSecurityGroups'
+                  - 'ec2:DescribeSpotInstanceRequests'
+                  - 'ec2:DescribeSpotPriceHistory'
+                  - 'ec2:DescribeSubnets'
+                  - 'ec2:DescribeVolumes'
+                  - 'ec2:DescribeVpcAttribute'
+                  - 'ec2:DescribeVpcs'
+                  - 'ec2:CreatePlacementGroup'
+                  - 'ec2:DeletePlacementGroup'
+                  - 'ec2:CreateKeyPair'
+                  - 'ec2:DeleteKeyPair'
+                  - 'ec2:CreateTags'
+                  - 'ec2:DeleteTags'
+                  - 'ec2:RequestSpotInstances'
+                Resource:
+                  - '*'
+              - Sid: InstancePoolsSupport
+                Effect: Allow
+                Action:
+                  - 'ec2:AssociateIamInstanceProfile'
+                  - 'ec2:DisassociateIamInstanceProfile'
+                  - 'ec2:ReplaceIamInstanceProfileAssociation'
+                Resource:
+                  - !Sub arn:${AWS::Partition}:ec2:${AWSRegion}:${AWS::AccountId}:instance/* 
+                Condition:
+                  StringEquals:
+                    'ec2:ResourceTag/Vendor': 'Databricks'
+              - Sid: AllowEc2RunInstancePerTag
+                Effect: Allow
+                Action:
+                  - 'ec2:RunInstances'
+                Resource:
+                  - !Sub arn:${AWS::Partition}:ec2:${AWSRegion}:${AWS::AccountId}:volume/*
+                  - !Sub arn:${AWS::Partition}:ec2:${AWSRegion}:${AWS::AccountId}:instance/*
+                Condition:
+                  StringEquals:
+                    'aws:RequestTag/Vendor': 'Databricks' 
+              - Sid: AllowEc2RunInstanceImagePerTag
+                Effect: Allow
+                Action:
+                  - 'ec2:RunInstances'
+                Resource:
+                  - !Sub arn:${AWS::Partition}:ec2:${AWSRegion}:${AWS::AccountId}:image/*
+                Condition:
+                  StringEquals:
+                    'aws:ResourceTag/Vendor': 'Databricks'
+              - Sid: AllowEc2RunInstancePerVPCid
+                Effect: Allow
+                Action:
+                  - 'ec2:RunInstances'
+                Resource:
+                  - !Sub arn:${AWS::Partition}:ec2:${AWSRegion}:${AWS::AccountId}:network-interface/*
+                  - !Sub arn:${AWS::Partition}:ec2:${AWSRegion}:${AWS::AccountId}:subnet/*
+                  - !Sub arn:${AWS::Partition}:ec2:${AWSRegion}:${AWS::AccountId}:security-group/*
+                Condition:
+                  StringEquals:
+                    'ec2:vpc' : !Sub 'arn:${AWS::Partition}:ec2:${AWSRegion}:${AWS::AccountId}:vpc/${VPCID}'
+              - Sid: AllowEc2RunInstanceOtherResources
+                Effect: Allow
+                Action:
+                  - 'ec2:RunInstances'
+                NotResource:
+                  - !Sub arn:${AWS::Partition}:ec2:${AWSRegion}:${AWS::AccountId}:image/* 
+                  - !Sub arn:${AWS::Partition}:ec2:${AWSRegion}:${AWS::AccountId}:network-interface/*
+                  - !Sub arn:${AWS::Partition}:ec2:${AWSRegion}:${AWS::AccountId}:subnet/*
+                  - !Sub arn:${AWS::Partition}:ec2:${AWSRegion}:${AWS::AccountId}:security-group/*
+                  - !Sub arn:${AWS::Partition}:ec2:${AWSRegion}:${AWS::AccountId}:volume/*
+                  - !Sub arn:${AWS::Partition}:ec2:${AWSRegion}:${AWS::AccountId}:instance/* 
+              - Sid: EC2TerminateInstancesTag
+                Effect: Allow
+                Action:
+                  - 'ec2:TerminateInstances'
+                Resource:
+                  - !Sub arn:${AWS::Partition}:ec2:${AWSRegion}:${AWS::AccountId}:instance/*
+                Condition:
+                  StringEquals:
+                    'ec2:ResourceTag/Vendor': 'Databricks' 
+              - Sid: EC2AttachDetachVolumeTag
+                Effect: Allow
+                Action:
+                  - 'ec2:AttachVolume'
+                  - 'ec2:DetachVolume'
+                Resource:
+                  - !Sub arn:${AWS::Partition}:ec2:${AWSRegion}:${AWS::AccountId}:instance/* 
+                  - !Sub arn:${AWS::Partition}:ec2:${AWSRegion}:${AWS::AccountId}:volume/*
+                Condition:
+                  StringEquals:
+                    'ec2:ResourceTag/Vendor': 'Databricks'
+              - Sid: EC2CreateVolumeByTag
+                Effect: Allow
+                Action:
+                  - 'ec2:CreateVolume'
+                Resource:
+                  - !Sub arn:${AWS::Partition}:ec2:${AWSRegion}:${AWS::AccountId}:volume/* 
+                Condition:
+                  StringEquals:
+                    'aws:RequestTag/Vendor': 'Databricks' 
+              - Sid: EC2DeleteVolumeByTag
+                Effect: Allow
+                Action:
+                  - 'ec2:DeleteVolume'
+                Resource:
+                  - !Sub arn:${AWS::Partition}:ec2:${AWSRegion}:${AWS::AccountId}:volume/* 
+                Condition:
+                  StringEquals:
+                    'ec2:ResourceTag/Vendor': 'Databricks'
+              - Effect: Allow
+                Action:
+                  - 'iam:CreateServiceLinkedRole'
+                  - 'iam:PutRolePolicy'
+                Resource: 
+                  - !Sub arn:${AWS::Partition}:iam::*:role/aws-service-role/spot.amazonaws.com/AWSServiceRoleForEC2Spot
+                Condition:
+                  StringLike:
+                    'iam:AWSServiceName': spot.amazonaws.com
+            Version: 2012-10-17
+          PolicyName: databricks-cross-account-iam-role-policy
+      Tags:
+        -
+          Key: Name
+          Value: !Sub '${TagValue}-IAMRole'
+
+#
+# THE FOLLOWING RESOURCES CONFIGURE THE S3 ROOT BUCKET AND THE ASSOCIATED POLICY.
+#
+# S3 root bucket requirements
   assetsS3Bucket:
     Type: AWS::S3::Bucket
     Properties:
@@ -490,6 +805,8 @@ Resources:
             NoncurrentVersionExpirationInDays: 5
       VersioningConfiguration: 
         Status: Enabled
+  
+ # S3 root bucket policy 
   bucketPolicy:
     Type: 'AWS::S3::BucketPolicy'
     Properties: 
@@ -512,8 +829,11 @@ Resources:
               - !Sub 'arn:${AWS::Partition}:s3:::${assetsS3Bucket}/*'
               - !Sub 'arn:${AWS::Partition}:s3:::${assetsS3Bucket}'
       Bucket: !Ref assetsS3Bucket 
-
-  # Databricks API for configuring notebook encryption with a customer managed AWS KMS, if provided
+#
+# THE FOLLOWING RESOURCES INVOKE DATABRICKS APIs
+#
+  
+# Databricks API for configuring notebook encryption with a customer managed AWS KMS, if provided
   createCustomerManagedKey:
     Condition: IsKMSKeyProvided
     DependsOn: updateCustomManagedKeys
@@ -533,7 +853,7 @@ Resources:
             - !Ref 'Password'
       user_agent: 'databricks-CloudFormation-provider'
 
-  # Databricks API for workspace credentials
+# Databricks API for workspace credentials
   createCredentials:
     Type: Custom::CreateCredentials
     Properties:
@@ -544,7 +864,7 @@ Resources:
         - '-'
         - - !Ref DeploymentName
           - 'credentials'
-      role_arn: !Ref IAMRoleARN
+      role_arn: !If [CreateCrossAccountIAMRole, !Ref accessRoleCustomerManagedVPC, !Ref ExistingCrossAccountIAMRoleARN]
       encodedbase64: 
         Fn::Base64: !Join
           - ':'
@@ -552,7 +872,7 @@ Resources:
             - !Ref 'Password'
       user_agent: 'databricks-CloudFormation-provider'
 
-  # Databricks API for workspace storage configuration
+# Databricks API for workspace storage configuration
   createStorageConfiguration:
     Type: Custom::CreateStorageConfigurations
     Properties:
@@ -571,7 +891,7 @@ Resources:
             - !Ref 'Password'
       user_agent: 'databricks-CloudFormation-provider'
 
-  # Databricks API for customer managed VPC
+# Databricks API for customer managed VPC
   createNetworks:
     DependsOn: createStorageConfiguration
     Type: Custom::createNetworks
@@ -583,13 +903,9 @@ Resources:
         - '-'
         - - !Ref 'DeploymentName'
           - 'network'
-      vpc_id: !Ref customerManagedVPC
-      subnet_ids: !Join
-        - ','
-        - - !Ref privateSubnet1
-          - !Ref privateSubnet2
-          - !Ref publicSubnet
-      security_group_ids: !Ref SecurityGroup
+      vpc_id: !If [HasExistingVPC, VPCID, !Ref customerManagedVPC]
+      subnet_ids: !If [HasExistingVPC, !Ref SubnetIDs, !Join [',', [!Ref privateSubnet1, !Ref privateSubnet2]]]
+      security_group_ids: !If [HasExistingVPC, !Ref SecurityGroupIDs, !Ref SecurityGroup]
       encodedbase64: 
         Fn::Base64: !Join
           - ':'
@@ -597,7 +913,7 @@ Resources:
             - !Ref 'Password'
       user_agent: 'databricks-CloudFormation-provider'
 
-  # Databricks API for workspace creation
+# Databricks API for workspace creation
   createWorkspace:
     Type: Custom::CreateWorkspace
     Properties:
@@ -625,21 +941,8 @@ Resources:
       authoritative_user_email: ''
       authoritative_user_full_name: ''
       user_agent: 'databricks-CloudFormation-provider'
-  
-  # Customer managed VPC - Create databricks-cross-account-iam-role-policy-sg policy 
-  updateIAMSecurityGroupIds:
-    DependsOn: updateIAMRoleFunction
-    Type: Custom::UpdateRoleAssumePolicy
-    Properties:
-      ServiceToken: !GetAtt 'updateIAMRoleFunction.Arn'
-      # HARD CODED IAM ROLE NAME
-      role_name: "DBCrossAccountIAMRole"
-      aws_region: !Ref AWSRegion
-      accountId: !Ref AWS::AccountId
-      security_group_ids: !Ref SecurityGroup
-      VPCID: !Ref customerManagedVPC
 
-  # Customer managed Keys - Update Storage policy for S3 and EBS volumes 
+# Customer managed Keys - Update Storage policy for S3 and EBS volumes 
   updateCustomManagedKeys:
     Condition: IsKMSKeyProvided
     DependsOn: updateKMSkeysFunction
@@ -647,11 +950,11 @@ Resources:
     Properties:
       ServiceToken: !GetAtt 'updateKMSkeysFunction.Arn'
       key_id: !Ref KeyArn
-      arn_credentials: !Ref IAMRoleARN
+      arn_credentials: !If [CreateCrossAccountIAMRole, !Ref accessRoleCustomerManagedVPC, !Ref ExistingCrossAccountIAMRoleARN]
       use_cases: !Ref KeyUseCases
       reuse_key_for_cluster_volumes: !Ref KeyReuseForClusterVolumes
 
-  # Databricks main Lambda for all E2 objects and workspace creation
+# Databricks main Lambda for all E2 objects and workspace creation
   databricksApiFunction:
     DependsOn: CopyZips
     Type: AWS::Lambda::Function
@@ -664,37 +967,8 @@ Resources:
       Code:
         S3Bucket: !Ref 'LambdaZipsBucket'
         S3Key: !Sub '${QSS3KeyPrefix}functions/packages/lambda.zip' 
-  
-  # Databricks lambda for updating the Security Group Ids 
-  updateIAMRoleFunction:
-    DependsOn: CopyZips
-    Type: AWS::Lambda::Function
-    Properties:
-      Description: Update IAM role policy document using the list of security group IDs.
-      Handler: update_custommanagedvpc_iam_role.handler
-      Runtime: python3.8
-      Role: !GetAtt 'functionRole.Arn'
-      Timeout: 60
-      Code:
-        S3Bucket: !Ref 'LambdaZipsBucket'
-        S3Key: !Sub '${QSS3KeyPrefix}functions/packages/lambda.zip'
 
-  # Databricks CMK lambda
-  updateKMSkeysFunction:
-    Condition: IsKMSKeyProvided
-    DependsOn: CopyZips
-    Type: AWS::Lambda::Function
-    Properties:
-      Description: UUpdate CMK policy document for storage.
-      Handler: update_custommanaged_cmk_policy.handler
-      Runtime: python3.8
-      Role: !GetAtt 'functionRole.Arn'
-      Timeout: 60
-      Code:
-        S3Bucket: !Ref 'LambdaZipsBucket'
-        S3Key: !Sub '${QSS3KeyPrefix}functions/packages/lambda.zip'
-
-  # IAM Role for lambda function execution
+# IAM Role for lambda function execution
   functionRole:
     Type: AWS::IAM::Role
     Metadata:
@@ -737,7 +1011,7 @@ Resources:
           Key: Name
           Value: !Sub '${TagValue}-IAMRole'
 
-  # Resources to stage lambda.zip file
+# Resources to stage lambda.zip file
   LambdaZipsBucket:
     Type: AWS::S3::Bucket
   CopyZips:
