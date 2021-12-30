@@ -97,4 +97,6 @@ To delete all resources in the stack using the AWS CLI, use the following comman
 This template is a work in progress.  Here is what is left to implement:
 
   1. AWS PrivateEndpoint & PrivateLink configuration
+  2. Test out option where VPC is pre-configured
+  3. Test creation of cross-account IAM role within CFT
 
