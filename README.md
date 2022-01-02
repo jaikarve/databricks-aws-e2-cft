@@ -23,8 +23,7 @@ AWS CloudFormation provides an "infrastructure-as-code" approach for deploying A
 
   * [Databricks Account](https://accounts.cloud.databricks.com/login):  In order to use this template, customers must create an account and elect AWS as the cloud provider.
   * Administrator access to an AWS account
-  * Fully configured access to the AWS account through the console or the AWS CLI.  The following steps assume AWS CLI usage.  
-  * *Optional*: If you wish to use your own KMS key to encrypt data stored in the control plane and within your own tenant, you will neec to create a KMS key adhering to [this guide for creating a key](https://docs.databricks.com/security/keys/customer-managed-keys-managed-services-aws.html#create-a-key).
+  * Fully configured access to the AWS account through the console or the AWS CLI.  The following steps assume AWS CLI usage.
 
 ## Installation
 
@@ -39,6 +38,7 @@ AWS CloudFormation provides an "infrastructure-as-code" approach for deploying A
     * __HIPAAparm__: Entering "Yes" creates a template for creating clusters in the HIPAA account.
     * __TagValue__: All new AWS objects get a tag with the key name. Enter a value to identify all new AWS objects that this template creates. For more information, see https://docs.aws.amazon.com/general/latest/gr/aws_tagging.html.
     * __ExistingCrossAccountIAMRoleARN__: An IAM cross-account role is required for the control plane to launch compute in the data plane.  If you already configured a cross-account IAM role adhering to [these requirements](https://docs.databricks.com/administration-guide/account-api/iam-role.html), specify the ARN of that IAM role here.  __IMPORTANT__: If you do provide a pre-configured cross-account IAM role, it must adhere to the [requirements](https://docs.databricks.com/administration-guide/account-api/iam-role.html) with all the appropriate policies.  Do not specify this value if you are looking to create the cross-account role through this template.
+    * __ExistingCrossAccountIAMRoleName__: If an IAM cross-account role is configured already, the role name should be passed in this parameter.
     * __NewCrossAccountIAMRoleName__: Enter a unique cross-account IAM role name if you wish to have Databricks create the cross-account IAM role.  The IAM role will be configured according to [the Databricks cross-account IAM role documentation](https://docs.databricks.com/administration-guide/account-api/iam-role.html).
     * __BucketName__: The name of your root bucket.  This bucket will contain root storage for workspace objects like cluster logs, notebook revisions, and job results libraries.
 
@@ -50,8 +50,7 @@ AWS CloudFormation provides an "infrastructure-as-code" approach for deploying A
     
     The following parameters only apply if you wish to utilize the [Customer-managed keys for managed services and storage](https://docs.databricks.com/security/keys/customer-managed-keys-managed-services-aws.html) feature.  Note that you must have already created a KMS key to use this template feature:
 
-    * __KeyArn__: AWS KMS key ARN to encrypt and decrypt workspace notebooks in the control plane. Only enter a value if you use the customer managed key for notebooks. For more information, see https://docs.databricks.com/security/keys/customer-managed-keys-notebook-aws.html.
-    * __KeyAlias__: AWS KMS key alias.  
+    * __NewKMSKeyAlias__: AWS KMS key alias for a new KMS key to be used for encrypting managed services, storage, or both.
     * __KeyUseCases__: Configures customer managed encryption keys. Acceptable values are MANAGED_SERVICES, STORAGE, or BOTH. For more information, see https://docs.databricks.com/administration-guide/account-api/new-workspace.html#step-5-configure-customer-managed-keys-optional.
     * __KeyReuseForClusterVolumes__: Only enter a value if the use case is STORAGE or BOTH. Acceptable values are "True" and "False."  
     * __QSS3BucketName__: S3 bucket for Quick Start assets. Use this if you want to customize the Quick Start. The bucket name can include numbers, lowercase letters, uppercase letters, and hyphens, but it cannot start or end with a hyphen (-).
@@ -88,7 +87,7 @@ The CFT will provide the following outputs:
   * __PricingTier__: Pricing tier of the workspace. For more information, see https://databricks.com/product/aws-pricing
   * __ClusterPolicyID__: Unique identifier for the cluster policy.
 
-To delete all resources in the stack using the AWS CLI, use the following command, replacing `<aws_profile>` with a profile linked to your AWS account with admin access:
+To delete all resources in the stack using the AWS CLI, use the following command, replacing `<stack_name` with the name of your stack and `<aws_profile>` with a profile linked to your AWS account with admin access:
 
 `aws cloudformation delete-stack --stack-name KarveBHTest --profile karve-personal`
 
@@ -97,6 +96,4 @@ To delete all resources in the stack using the AWS CLI, use the following comman
 This template is a work in progress.  Here is what is left to implement:
 
   1. AWS PrivateEndpoint & PrivateLink configuration
-  2. Test out option where VPC is pre-configured
-  3. Test creation of cross-account IAM role within CFT
 

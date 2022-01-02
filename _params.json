@@ -36,16 +36,20 @@
         "ParameterValue": "<INITIAL_PASSWORD>"
     },
     {
-        "ParameterKey": "IAMRoleARN",
-        "ParameterValue": "<CROSS_ACCOUNT_IAM_ROLE_ARN"
+        "ParameterKey": "ExistingCrossAccountIAMRoleARN",
+        "ParameterValue": "<EXISTING_CROSS_ACCOUNT_IAM_ROLE_ARN>"
     },
     {
-        "ParameterKey": "KeyArn",
-        "ParameterValue": "<KMS_KEY_ARN>"
+        "ParameterKey": "ExistingCrossAccountIAMRoleName",
+        "ParameterValue": "<EXISTING_CROSS_ACCOUNT_IAM_ROLE_NAME>"
     },
     {
-        "ParameterKey": "KeyAlias",
+        "ParameterKey": "NewKMSKeyAlias",
         "ParameterValue": "<KMS_KEY_ALIAS>"
+    },
+    {
+        "ParameterKey": "NewCrossAccountIAMRoleName",
+        "ParameterValue": "<NAME_FOR_NEW_CROSS_ACCOUNT_IAM_ROLE>"
     },
     {
         "ParameterKey": "KeyUseCases",

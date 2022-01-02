@@ -21,13 +21,13 @@ Metadata:
         Parameters:
           - TagValue
           - ExistingCrossAccountIAMRoleARN
+          - ExistingCrossAccountIAMRoleName
           - NewCrossAccountIAMRoleName
           - BucketName
       - Label:
           default: "(Optional) Customer managed key configuration for notebooks (requires the enterprise tier)"
         Parameters:
-          - KeyArn
-          - KeyAlias
+          - NewKMSKeyAlias
           - KeyUseCases
           - KeyReuseForClusterVolumes
       - Label:
@@ -56,9 +56,7 @@ Metadata:
         default: Cross-account IAM role ARN
       BucketName:
         default: Root S3 bucket name
-      KeyArn:
-        default: ARN for the customer managed AWS KMS key
-      KeyAlias:
+      NewKMSKeyAlias:
         default: Alias for the customer managed AWS KMS key
       KeyUseCases:
         default: Use case for which to use the key
@@ -79,7 +77,7 @@ Outputs:
     Value: !Ref assetsS3Bucket
   CustomerManagedKeyId:
     Description: ID of the customer managed key object.
-    Condition: IsKMSKeyProvided
+    Condition: CMKEncrypted
     Value: !GetAtt createCustomerManagedKey.CustomerManagedKeyId
   CredentialsId:
     Description: Credential ID.
@@ -177,6 +175,10 @@ Parameters:
     Description: "Enter the ARN of an existing cross-account IAM role, ensuring it meets the requirements here: https://docs.databricks.com/administration-guide/account-api/iam-role.html"
     Type: String
     Default: ''
+  ExistingCrossAccountIAMRoleName:
+    Description: "Enter the role name of the existing cross-account IAM role"
+    Type: String
+    Default: ''
   NewCrossAccountIAMRoleName: 
     Description: "Enter a unique cross-account IAM role name. For more information, see https://docs.aws.amazon.com/IAM/latest/APIReference/API_CreateRole.html."
     Type: String
@@ -200,17 +202,14 @@ Parameters:
     Description: "Enter at least two private subnet IDs [i.e. subnet-xxxx,subnet-yyyy]. Only enter a value if you set VPCID. Subnets cannot be shared with other workspaces or non-Databricks resources. Each subnet must be private, have outbound access, and a netmask between /17 and /25. The NAT gateway must have its own subnet that routes 0.0.0.0/0 traffic to an internet gateway. For more information, see https://docs.databricks.com/administration-guide/cloud-configurations/aws/customer-managed-vpc.html."
     Type: String
     Default: ''
-  KeyArn:
-    Description: "AWS KMS key ARN to encrypt and decrypt workspace notebooks in the control plane. Only enter a value if you use the customer managed key for notebooks. For more information, see https://docs.databricks.com/security/keys/customer-managed-keys-notebook-aws.html."
-    Type: String
-    Default: ''
-  KeyAlias:
-    Description: "(Optional) AWS KMS key alias."
+  NewKMSKeyAlias:
+    Description: "(Optional) Creates a new AWS KMS key with the given alias for encrypting data"
     Type: String
     Default: ''
   KeyUseCases:
     Description: "Configures customer managed encryption keys. Acceptable values are MANAGED_SERVICES, STORAGE, or BOTH. For more information, see https://docs.databricks.com/administration-guide/account-api/new-workspace.html#step-5-configure-customer-managed-keys-optional."
-    Type: String 
+    Type: String
+    Default: 'BOTH'
   KeyReuseForClusterVolumes:
     Description: 'Only enter a value if the use case is STORAGE or BOTH. Acceptable values are "True" and "False."'
     Type: String
@@ -235,9 +234,9 @@ Conditions:
 # Set condition when VPC ID is NOT provided by the user
   CreateVPC: !Equals [!Ref VPCID, '']
 # Set condition when cross-account role should be created by this template
-  CreateCrossAccountIAMRole: !Equals [!Ref ExistingCrossAccountIAMRoleARN, '']
+  CreateCrossAccountIAMRole: !Not [!Equals [!Ref NewCrossAccountIAMRoleName, '']]
 # Set condition when AWS KMS key ID is provided by the user. 
-  IsKMSKeyProvided: !Not [!Equals [!Ref KeyArn, '']]
+  CMKEncrypted: !Not [!Equals [!Ref NewKMSKeyAlias, '']]
 # Test for STORAGE CMK use case
   IsClusterVolumeSet: !Equals [!Ref KeyReuseForClusterVolumes, 'True']
 
@@ -253,6 +252,8 @@ Rules:
     Assertions:
     - Assert: !Equals [!Ref NewCrossAccountIAMRoleName, '']
       AssertDescription: Name for cross-account IAM role must be given if an existing cross-account IAM Role ARN is not provided.
+    - Assert: !Not [!Equals [!Ref ExistingCrossAccountIAMRoleName, '']]
+      AssertDescription: IAM Role name for existing cross-account role must be specified.
 # 3. Ensure that an existing cross-account IAM role ARN is not supplied when an IAM role name is given to create the cross-account role.
   CreateCrossAccountIAMRole:
     RuleCondition: !Not [!Equals [!Ref NewCrossAccountIAMRoleName, '']]
@@ -271,12 +272,12 @@ Rules:
     Assertions:
     - Assert: !Not [!Equals [!Ref SubnetIDs, '']]
       AssertDescription: Subnet IDs should be supplied when VPC ID is provided.
-# 4. Optional Section. Ensure the KeyARN is provided when a use case is specified.
+# 4. Optional Section. Ensure the KeyAlias is provided when a use case is specified.
   KeyUseCases1:
-    RuleCondition: !Not [!Equals [!Ref KeyArn, '']]
+    RuleCondition: !Not [!Equals [!Ref NewKMSKeyAlias, '']]
     Assertions:
     - Assert: !Contains [['MANAGED_SERVICES', 'STORAGE', 'BOTH'],!Ref KeyUseCases]
-      AssertDescription: Acceptable values are MANAGED_SERVICES, STORAGE, or BOTH when you provide a role ARN.
+      AssertDescription: Acceptable values are MANAGED_SERVICES, STORAGE, or BOTH when you provide a new key alias to be created.
     
   KeyUseCases2:
     RuleCondition: !Or
@@ -617,6 +618,7 @@ Resources:
 #
 
 # Create cross-account IAM role, according to the following: https://docs.databricks.com/administration-guide/account-api/iam-role.html
+
   accessRoleCustomerManagedVPC:
     Type: 'AWS::IAM::Role'
     Metadata:
@@ -648,10 +650,18 @@ Resources:
       Policies:
         - PolicyDocument:
             Statement:
-              - Sid: NonResourceBasedPermissions
+              - Sid: Stmt1403287045000
                 Effect: Allow
                 Action:
+                  - 'ec2:AssociateIamInstanceProfile'
+                  - 'ec2:AttachVolume'
+                  - 'ec2:AuthorizeSecurityGroupEgress'
+                  - 'ec2:AuthorizeSecurityGroupIngress'
                   - 'ec2:CancelSpotInstanceRequests'
+                  - 'ec2:CreateTags'
+                  - 'ec2:CreateVolume'
+                  - 'ec2:DeleteTags'
+                  - 'ec2:DeleteVolume'
                   - 'ec2:DescribeAvailabilityZones'
                   - 'ec2:DescribeIamInstanceProfileAssociations'
                   - 'ec2:DescribeInstanceStatus'
@@ -659,7 +669,6 @@ Resources:
                   - 'ec2:DescribeInternetGateways'
                   - 'ec2:DescribeNatGateways'
                   - 'ec2:DescribeNetworkAcls'
-                  - 'ec2:DescribePlacementGroups'
                   - 'ec2:DescribePrefixLists'
                   - 'ec2:DescribeReservedInstancesOfferings'
                   - 'ec2:DescribeRouteTables'
@@ -670,105 +679,16 @@ Resources:
                   - 'ec2:DescribeVolumes'
                   - 'ec2:DescribeVpcAttribute'
                   - 'ec2:DescribeVpcs'
-                  - 'ec2:CreatePlacementGroup'
-                  - 'ec2:DeletePlacementGroup'
-                  - 'ec2:CreateKeyPair'
-                  - 'ec2:DeleteKeyPair'
-                  - 'ec2:CreateTags'
-                  - 'ec2:DeleteTags'
-                  - 'ec2:RequestSpotInstances'
-                Resource:
-                  - '*'
-              - Sid: InstancePoolsSupport
-                Effect: Allow
-                Action:
-                  - 'ec2:AssociateIamInstanceProfile'
+                  - 'ec2:DetachVolume'
                   - 'ec2:DisassociateIamInstanceProfile'
                   - 'ec2:ReplaceIamInstanceProfileAssociation'
-                Resource:
-                  - !Sub arn:${AWS::Partition}:ec2:${AWSRegion}:${AWS::AccountId}:instance/* 
-                Condition:
-                  StringEquals:
-                    'ec2:ResourceTag/Vendor': 'Databricks'
-              - Sid: AllowEc2RunInstancePerTag
-                Effect: Allow
-                Action:
+                  - 'ec2:RequestSpotInstances'
+                  - 'ec2:RevokeSecurityGroupEgress'
+                  - 'ec2:RevokeSecurityGroupIngress'
                   - 'ec2:RunInstances'
-                Resource:
-                  - !Sub arn:${AWS::Partition}:ec2:${AWSRegion}:${AWS::AccountId}:volume/*
-                  - !Sub arn:${AWS::Partition}:ec2:${AWSRegion}:${AWS::AccountId}:instance/*
-                Condition:
-                  StringEquals:
-                    'aws:RequestTag/Vendor': 'Databricks' 
-              - Sid: AllowEc2RunInstanceImagePerTag
-                Effect: Allow
-                Action:
-                  - 'ec2:RunInstances'
-                Resource:
-                  - !Sub arn:${AWS::Partition}:ec2:${AWSRegion}:${AWS::AccountId}:image/*
-                Condition:
-                  StringEquals:
-                    'aws:ResourceTag/Vendor': 'Databricks'
-              - Sid: AllowEc2RunInstancePerVPCid
-                Effect: Allow
-                Action:
-                  - 'ec2:RunInstances'
-                Resource:
-                  - !Sub arn:${AWS::Partition}:ec2:${AWSRegion}:${AWS::AccountId}:network-interface/*
-                  - !Sub arn:${AWS::Partition}:ec2:${AWSRegion}:${AWS::AccountId}:subnet/*
-                  - !Sub arn:${AWS::Partition}:ec2:${AWSRegion}:${AWS::AccountId}:security-group/*
-                Condition:
-                  StringEquals:
-                    'ec2:vpc' : !Sub 'arn:${AWS::Partition}:ec2:${AWSRegion}:${AWS::AccountId}:vpc/${VPCID}'
-              - Sid: AllowEc2RunInstanceOtherResources
-                Effect: Allow
-                Action:
-                  - 'ec2:RunInstances'
-                NotResource:
-                  - !Sub arn:${AWS::Partition}:ec2:${AWSRegion}:${AWS::AccountId}:image/* 
-                  - !Sub arn:${AWS::Partition}:ec2:${AWSRegion}:${AWS::AccountId}:network-interface/*
-                  - !Sub arn:${AWS::Partition}:ec2:${AWSRegion}:${AWS::AccountId}:subnet/*
-                  - !Sub arn:${AWS::Partition}:ec2:${AWSRegion}:${AWS::AccountId}:security-group/*
-                  - !Sub arn:${AWS::Partition}:ec2:${AWSRegion}:${AWS::AccountId}:volume/*
-                  - !Sub arn:${AWS::Partition}:ec2:${AWSRegion}:${AWS::AccountId}:instance/* 
-              - Sid: EC2TerminateInstancesTag
-                Effect: Allow
-                Action:
                   - 'ec2:TerminateInstances'
                 Resource:
-                  - !Sub arn:${AWS::Partition}:ec2:${AWSRegion}:${AWS::AccountId}:instance/*
-                Condition:
-                  StringEquals:
-                    'ec2:ResourceTag/Vendor': 'Databricks' 
-              - Sid: EC2AttachDetachVolumeTag
-                Effect: Allow
-                Action:
-                  - 'ec2:AttachVolume'
-                  - 'ec2:DetachVolume'
-                Resource:
-                  - !Sub arn:${AWS::Partition}:ec2:${AWSRegion}:${AWS::AccountId}:instance/* 
-                  - !Sub arn:${AWS::Partition}:ec2:${AWSRegion}:${AWS::AccountId}:volume/*
-                Condition:
-                  StringEquals:
-                    'ec2:ResourceTag/Vendor': 'Databricks'
-              - Sid: EC2CreateVolumeByTag
-                Effect: Allow
-                Action:
-                  - 'ec2:CreateVolume'
-                Resource:
-                  - !Sub arn:${AWS::Partition}:ec2:${AWSRegion}:${AWS::AccountId}:volume/* 
-                Condition:
-                  StringEquals:
-                    'aws:RequestTag/Vendor': 'Databricks' 
-              - Sid: EC2DeleteVolumeByTag
-                Effect: Allow
-                Action:
-                  - 'ec2:DeleteVolume'
-                Resource:
-                  - !Sub arn:${AWS::Partition}:ec2:${AWSRegion}:${AWS::AccountId}:volume/* 
-                Condition:
-                  StringEquals:
-                    'ec2:ResourceTag/Vendor': 'Databricks'
+                  - '*'
               - Effect: Allow
                 Action:
                   - 'iam:CreateServiceLinkedRole'
@@ -779,7 +699,7 @@ Resources:
                   StringLike:
                     'iam:AWSServiceName': spot.amazonaws.com
             Version: 2012-10-17
-          PolicyName: databricks-cross-account-iam-role-policy
+          PolicyName: databricks-cross-account-iam-role-policy     
       Tags:
         -
           Key: Name
@@ -828,22 +748,42 @@ Resources:
             Resource:
               - !Sub 'arn:${AWS::Partition}:s3:::${assetsS3Bucket}/*'
               - !Sub 'arn:${AWS::Partition}:s3:::${assetsS3Bucket}'
-      Bucket: !Ref assetsS3Bucket 
+      Bucket: !Ref assetsS3Bucket
+
+  CustomerManagedKey:
+    Type: 'AWS::KMS::Key'
+    Properties:
+      Description: KMS key used to encrypted Databricks data
+      KeyPolicy:
+        Version: 2012-10-17
+        Id: key-default-1
+        Statement:
+          - Sid: Enable IAM user permissions
+            Effect: Allow
+            Principal: 
+              AWS: !Sub 'arn:aws:iam::${AWS::AccountId}:root'
+            Action: 'kms:*'
+            Resource: '*'
+  CustomerManagedKeyAlias:
+    Type: 'AWS::KMS::Alias'
+    Properties:
+      AliasName: !Sub alias/${NewKMSKeyAlias}
+      TargetKeyId: !GetAtt CustomerManagedKey.KeyId
 #
 # THE FOLLOWING RESOURCES INVOKE DATABRICKS APIs
 #
   
 # Databricks API for configuring notebook encryption with a customer managed AWS KMS, if provided
   createCustomerManagedKey:
-    Condition: IsKMSKeyProvided
+    Condition: CMKEncrypted
     DependsOn: updateCustomManagedKeys
     Type: Custom::CreateCustomerManagedKey
     Properties:
       ServiceToken: !GetAtt 'databricksApiFunction.Arn'
       action: 'CREATE_CUSTOMER_MANAGED_KEY'
       accountId: !Ref AccountId
-      key_arn: !Ref KeyArn
-      key_alias: !Ref KeyAlias
+      key_arn: !GetAtt CustomerManagedKey.Arn
+      key_alias: !Ref CustomerManagedKeyAlias
       use_cases: !Ref KeyUseCases
       reuse_key_for_cluster_volumes: !Ref KeyReuseForClusterVolumes
       encodedbase64: 
@@ -864,7 +804,7 @@ Resources:
         - '-'
         - - !Ref DeploymentName
           - 'credentials'
-      role_arn: !If [CreateCrossAccountIAMRole, !Ref accessRoleCustomerManagedVPC, !Ref ExistingCrossAccountIAMRoleARN]
+      role_arn: !If [CreateCrossAccountIAMRole, !GetAtt accessRoleCustomerManagedVPC.Arn, !Ref ExistingCrossAccountIAMRoleARN]
       encodedbase64: 
         Fn::Base64: !Join
           - ':'
@@ -934,7 +874,7 @@ Resources:
           - - !Ref 'Username'
             - !Ref 'Password'
       network_id: !GetAtt createNetworks.NetworkId
-      customer_managed_key_id: !If [IsKMSKeyProvided, !GetAtt 'createCustomerManagedKey.CustomerManagedKeyId', '']
+      customer_managed_key_id: !If [CMKEncrypted, !GetAtt 'createCustomerManagedKey.CustomerManagedKeyId', '']
       pricing_tier: !Ref PricingTier
       hipaa_parm: !Ref HIPAAparm
       customer_name: ''
@@ -942,15 +882,27 @@ Resources:
       authoritative_user_full_name: ''
       user_agent: 'databricks-CloudFormation-provider'
 
+  updateIAMSecurityGroupIds:
+    DependsOn: updateIAMRoleFunction
+    Type: Custom::UpdateRoleAssumePolicy
+    Properties:
+      ServiceToken: !GetAtt 'updateIAMRoleFunction.Arn'
+      # Hard Coded
+      role_name: !If [CreateCrossAccountIAMRole, !Ref NewCrossAccountIAMRoleName, !Ref ExistingCrossAccountIAMRoleName]
+      aws_region: !Ref AWSRegion
+      accountId: !Ref AWS::AccountId
+      security_group_ids: !Ref SecurityGroupIDs
+      VPCID: !If [HasExistingVPC, !Ref VPCID, !Ref customerManagedVPC]
+
 # Customer managed Keys - Update Storage policy for S3 and EBS volumes 
   updateCustomManagedKeys:
-    Condition: IsKMSKeyProvided
+    Condition: CMKEncrypted
     DependsOn: updateKMSkeysFunction
     Type: Custom::updateCustomManagedKeys
     Properties:
       ServiceToken: !GetAtt 'updateKMSkeysFunction.Arn'
-      key_id: !Ref KeyArn
-      arn_credentials: !If [CreateCrossAccountIAMRole, !Ref accessRoleCustomerManagedVPC, !Ref ExistingCrossAccountIAMRoleARN]
+      key_id: !GetAtt CustomerManagedKey.Arn
+      arn_credentials: !If [CreateCrossAccountIAMRole, !GetAtt 'accessRoleCustomerManagedVPC.Arn', !Ref ExistingCrossAccountIAMRoleARN]
       use_cases: !Ref KeyUseCases
       reuse_key_for_cluster_volumes: !Ref KeyReuseForClusterVolumes
 
@@ -966,14 +918,27 @@ Resources:
       Timeout: 900
       Code:
         S3Bucket: !Ref 'LambdaZipsBucket'
-        S3Key: !Sub '${QSS3KeyPrefix}functions/packages/lambda.zip' 
+        S3Key: !Sub '${QSS3KeyPrefix}functions/packages/lambda.zip'
 
-  updateKMSkeysFunction:
-    Condition: IsKMSKeyProvided
+  updateIAMRoleFunction:
     DependsOn: CopyZips
     Type: AWS::Lambda::Function
     Properties:
-      Description: UUpdate CMK policy document for storage.
+      Description: Update IAM role policy document using the list of security group IDs.
+      Handler: update_custommanagedvpc_iam_role.handler
+      Runtime: python3.8
+      Role: !GetAtt 'functionRole.Arn'
+      Timeout: 60
+      Code:
+        S3Bucket: !Ref 'LambdaZipsBucket'
+        S3Key: !Sub '${QSS3KeyPrefix}functions/packages/lambda.zip'
+
+  updateKMSkeysFunction:
+    Condition: CMKEncrypted
+    DependsOn: CopyZips
+    Type: AWS::Lambda::Function
+    Properties:
+      Description: Update CMK policy document for storage.
       Handler: update_custommanaged_cmk_policy.handler
       Runtime: python3.8
       Role: !GetAtt 'functionRole.Arn'
