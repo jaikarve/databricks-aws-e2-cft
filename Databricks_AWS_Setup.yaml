@@ -226,6 +226,14 @@ Parameters:
     AllowedPattern: '^[0-9a-zA-Z-/]*$'
     Type: String
     Default: quickstart-databricks-unified-data-analytics-platform/
+  DBSPrivateLinkMode:
+    Description: The Private Link setup mode for the Databricks workspace
+    Type: String
+    AllowedValues:
+      - "Off"
+      - "PublicAccessEnabled"
+      - "PublicAccessDisabled"
+    Default: "Off"
   
 
 Conditions:
@@ -239,6 +247,8 @@ Conditions:
   CMKEncrypted: !Not [!Equals [!Ref NewKMSKeyAlias, '']]
 # Test for STORAGE CMK use case
   IsClusterVolumeSet: !Equals [!Ref KeyReuseForClusterVolumes, 'True']
+  EnablePrivateLink: !Not [ !Equals [!Ref DBSPrivateLinkMode, "Off"] ]
+  PublicAccessForPrivateLink: !Equals [!Ref DBSPrivateLinkMode, "PublicAccessEnabled"]
 
 Rules:
 # 1. Validate the selected Region from drop-down matches the Region from the Console
@@ -451,13 +461,57 @@ Resources:
       ToPort: 65535
 
 # Security Group Egress, according to the following: https://docs.databricks.com/administration-guide/cloud-configurations/aws/customer-managed-vpc.html#security-groups
-  SecurityGroupEgressAll:
+  DBSWorkspaceSecurityGroupDefaultTcpEgress:
     Type: AWS::EC2::SecurityGroupEgress
     Condition: CreateVPC
     Properties:
-      GroupId: !Ref SecurityGroup
+      GroupId: !GetAtt SecurityGroup.GroupId
+      Description: Allow all tcp output access from the same security group
+      DestinationSecurityGroupId: !GetAtt SecurityGroup.GroupId
+      IpProtocol: tcp
+      FromPort: 0
+      ToPort: 65535
+  
+  DBSWorkspaceSecurityGroupDefaultUdpEgress:
+    Type: AWS::EC2::SecurityGroupEgress
+    Properties:
+      GroupId: !GetAtt SecurityGroup.GroupId
+      Description: Allow all udp output access from the same security group
+      DestinationSecurityGroupId: !GetAtt SecurityGroup.GroupId
+      IpProtocol: udp
+      FromPort: 0
+      ToPort: 65535
+  
+  DBSWorkspaceSecurityGroupEgressForHttps:
+    Type: AWS::EC2::SecurityGroupEgress
+    Properties:
+      GroupId: !GetAtt SecurityGroup.GroupId
+      Description: Allow accessing Databricks infrastructure, cloud data sources, and library repositories
       CidrIp: 0.0.0.0/0
-      IpProtocol: -1
+      IpProtocol: tcp
+      FromPort: 443
+      ToPort: 443
+
+  DBSWorkspaceSecurityGroupEgressForMetastore:
+    Type: AWS::EC2::SecurityGroupEgress
+    Properties:
+      GroupId: !GetAtt SecurityGroup.GroupId
+      Description: Allow accessing the Databricks metastore
+      CidrIp: 0.0.0.0/0
+      IpProtocol: tcp
+      FromPort: 3306
+      ToPort: 3306
+
+  DBSWorkspaceSecurityGroupEgressForPrivateLink:
+    Condition: EnablePrivateLink
+    Type: AWS::EC2::SecurityGroupEgress
+    Properties:
+      GroupId: !GetAtt SecurityGroup.GroupId
+      Description: Allow accessing the Databricks control plane using private link
+      CidrIp: 0.0.0.0/0
+      IpProtocol: tcp
+      FromPort: 6666
+      ToPort: 6666
 
 # Network ACL
   NetworkAcl:
@@ -516,37 +570,68 @@ Resources:
 #
 # THE FOLLOWING RESOURCES ARE USED FOR PRIVATELINK
 #
-  #VPCEndpointS3:
-   # Type: AWS::EC2::VPCEndpoint
-    #Properties:
-     # RouteTableIds:
-      #  - !Ref PrivateRouteTable1
-      #ServiceName: 'com.amazonaws.us-east-1.s3'
-      #VpcId: !Ref customerManagedVPC
-  #VPCEndpointSTS:
-   # Type: AWS::EC2::VPCEndpoint
-    #Properties:
-     # VpcEndpointType: Interface
-      #PrivateDnsEnabled: true
-      #SecurityGroupIds:
-       # - !Ref SecurityGroup
-      #SubnetIds:
-       # - !Ref privateSubnet1
-        #- !Ref privateSubnet2
-      #ServiceName: 'com.amazonaws.sts'
-      #VpcId: !Ref customerManagedVPC
-  #VPCEndpointKinesis:
-   # Type: AWS::EC2::VPCEndpoint
-    #Properties:
-     # VpcEndpointType: Interface
-      #PrivateDnsEnabled: true
-      #SecurityGroupIds:
-       # - !Ref SecurityGroup
-      #SubnetIds:
-       # - !Ref privateSubnet1
-        #- !Ref privateSubnet2
-      #ServiceName: 'com.amazonaws.us-east-1.kinesis'
-      #VpcId: !Ref customerManagedVPC
+  S3GatewayEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      ServiceName: !Sub com.amazonaws.${AWS::Region}.s3
+      VpcEndpointType: Gateway
+      VpcId: !If [HasExistingVPC, !Ref VPCID, !Ref customerManagedVPC]
+      RouteTableIds:
+        - !Ref PrivateRouteTable1
+        - !Ref PublicRouteTable
+
+  STSInterfaceEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      ServiceName: !Sub com.amazonaws.${AWS::Region}.sts
+      VpcEndpointType: Interface
+      VpcId: !If [HasExistingVPC, !Ref VPCID, !Ref customerManagedVPC]
+      PrivateDnsEnabled: true
+      SecurityGroupIds:
+        - !GetAtt SecurityGroup.GroupId
+      SubnetIds:
+        - !Ref privateSubnet1
+        - !Ref privateSubnet2
+
+  KinesisInterfaceEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      ServiceName: !Sub com.amazonaws.${AWS::Region}.kinesis-streams
+      VpcEndpointType: Interface
+      VpcId: !If [HasExistingVPC, !Ref VPCID, !Ref customerManagedVPC]
+      PrivateDnsEnabled: true
+      SecurityGroupIds:
+        - !GetAtt SecurityGroup.GroupId
+      SubnetIds:
+        - !Ref privateSubnet1
+        - !Ref privateSubnet2
+  
+  KinesisFirehoseInterfaceEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      ServiceName: !Sub com.amazonaws.${AWS::Region}.kinesis-firehose
+      VpcEndpointType: Interface
+      VpcId: !If [HasExistingVPC, !Ref VPCID, !Ref customerManagedVPC]
+      PrivateDnsEnabled: true
+      SecurityGroupIds:
+        - !GetAtt SecurityGroup.GroupId
+      SubnetIds:
+        - !Ref privateSubnet1
+        - !Ref privateSubnet2
+   
+  KMSInterfaceEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      ServiceName: !Sub com.amazonaws.${AWS::Region}.kms
+      VpcEndpointType: Interface
+      VpcId: !If [HasExistingVPC, !Ref VPCID, !Ref customerManagedVPC]
+      PrivateDnsEnabled: true
+      SecurityGroupIds:
+        - !GetAtt SecurityGroup.GroupId
+      SubnetIds:
+        - !Ref privateSubnet1
+        - !Ref privateSubnet2
+
   #VPCEndpointWorkspace:
    # Type: AWS::EC2::VPCEndpoint
     #Properties:
@@ -837,50 +922,72 @@ Resources:
     Type: Custom::createNetworks
     Properties:
       ServiceToken: !GetAtt 'databricksApiFunction.Arn'
-      action: 'CREATE_NETWORKS'
-      accountId: !Ref AccountId
-      network_name: !Join
-        - '-'
-        - - !Ref 'DeploymentName'
-          - 'network'
-      vpc_id: !If [HasExistingVPC, !Ref VPCID, !Ref customerManagedVPC]
-      subnet_ids: !If [HasExistingVPC, !Ref SubnetIDs, !Join [',', [!Ref privateSubnet1, !Ref privateSubnet2]]]
-      security_group_ids: !If [HasExistingVPC, !Ref SecurityGroupIDs, !Ref SecurityGroup]
-      encodedbase64: 
-        Fn::Base64: !Join
-          - ':'
-          - - !Ref 'Username'
-            - !Ref 'Password'
-      user_agent: 'databricks-CloudFormation-provider'
+      DatabricksAccountId: !Ref AccountId
+      Username: !Ref Username
+      Password: !Ref Password
+      NetworkName: !Sub ${AWS::StackName}_network
+      VpcId: !If [HasExistingVPC, !Ref VPCID, !Ref customerManagedVPC]
+      Subnets: !If [HasExistingVPC, !Ref SubnetIDs, !Join [',', [!Ref privateSubnet1, !Ref privateSubnet2]]]
+      SecurityGroups: !If [HasExistingVPC, !Ref SecurityGroupIDs, !Ref SecurityGroup]
+      VpcEndpoints: !If
+        - EnablePrivateLink
+        - RestApiEndpointId: !Ref WorkspaceVpcEndpoint
+          DataplaneRelayEndpointId: !Ref BackendVpcEndpoint
+        - !Ref AWS::NoValue
+
+  WorkspaceVpcEndpoint:
+    Condition: EnablePrivateLink
+    Type: Custom::WorkspaceVpcEndpoint
+    Properties:
+      ServiceToken: !GetAtt databricksApiFunction.Arn
+      DatabricksAccountId: !Ref AccountId
+      Username: !Ref Username
+      Password: !Ref Password
+      EndpointName: !Sub ${AWS::StackName}_workspaceVpcEndpoint
+      VpcId: !If [HasExistingVPC, !Ref VPCID, !Ref customerManagedVPC]
+      Subnets: !If [HasExistingVPC, !Ref SubnetIDs, !Join [',', [!Ref privateSubnet1, !Ref privateSubnet2]]]
+      SecurityGroups: !If [HasExistingVPC, !Ref SecurityGroupIDs, !Ref SecurityGroup]
+
+  BackendVpcEndpoint:
+    Condition: EnablePrivateLink
+    Type: Custom::BackendVpcEndpoint
+    Properties:
+      ServiceToken: !GetAtt databricksApiFunction.Arn
+      DatabricksAccountId: !Ref AccountId
+      Username: !Ref Username
+      Password: !Ref Password
+      EndpointName: !Sub ${AWS::StackName}_backendVpcEndpoint
+      VpcId: !If [HasExistingVPC, !Ref VPCID, !Ref customerManagedVPC]
+      Subnets: !If [HasExistingVPC, !Ref SubnetIDs, !Join [',', [!Ref privateSubnet1, !Ref privateSubnet2]]]
+      SecurityGroups: !If [HasExistingVPC, !Ref SecurityGroupIDs, !Ref SecurityGroup]
+  
+  PrivateAccessConfiguration:
+    Condition: EnablePrivateLink
+    Type: Custom::PrivateAccessConfiguration
+    Properties:
+      ServiceToken: !GetAtt databricksApiFunction.Arn
+      DatabricksAccountId: !Ref AccountId
+      Username: !Ref Username
+      Password: !Ref Password
+      PrivateAccessSettingsName:  !Sub ${AWS::StackName}_privateAccessSettings
+      PublicAccessEnabled: !If [ PublicAccessForPrivateLink, true, false ]
+      AllowedVpcEndpoints:
+        - !Ref WorkspaceVpcEndpoint
 
 # Databricks API for workspace creation
   createWorkspace:
-    Type: Custom::CreateWorkspace
+    Type: Custom::DatabricksWorkspace
     Properties:
       ServiceToken: !GetAtt 'databricksApiFunction.Arn'
-      action: 'CREATE_WORKSPACES'
-      accountId: !Ref AccountId
-      workspace_name: !Join
-        - '-'
-        - - !Ref 'DeploymentName'
-          - 'workspace'
-      deployment_name: !Ref 'DeploymentName'
-      aws_region: !Ref AWSRegion
-      credentials_id: !GetAtt createCredentials.CredentialsId
-      storage_config_id: !GetAtt createStorageConfiguration.StorageConfigId
-      encodedbase64: 
-        Fn::Base64: !Join
-          - ':'
-          - - !Ref 'Username'
-            - !Ref 'Password'
-      network_id: !GetAtt createNetworks.NetworkId
-      customer_managed_key_id: !If [CMKEncrypted, !GetAtt 'createCustomerManagedKey.CustomerManagedKeyId', '']
-      pricing_tier: !Ref PricingTier
-      hipaa_parm: !Ref HIPAAparm
-      customer_name: ''
-      authoritative_user_email: ''
-      authoritative_user_full_name: ''
-      user_agent: 'databricks-CloudFormation-provider'
+      DatabricksAccountId: !Ref AccountId
+      WorkspaceName: !Sub ${AWS::StackName}_workspace
+      CredentialsId: !GetAtt createCredentials.CredentialsId
+      StorageId: !GetAtt createStorageConfiguration.StorageConfigId
+      Username: !Ref Username
+      Password: !Ref Password
+      NetworkId: !GetAtt createNetworks.NetworkId
+      ManagedServicesKeyId: !If [CMKEncrypted, !GetAtt 'createCustomerManagedKey.CustomerManagedKeyId', '']
+      PrivateAccessId: !If [ EnablePrivateLink, !Ref PrivateAccessConfiguration, !Ref AWS::NoValue ]
 
   updateIAMSecurityGroupIds:
     DependsOn: updateIAMRoleFunction
@@ -1037,6 +1144,11 @@ Resources:
           Value: !Sub '${TagValue}-IAMRole'
 
 
+  
+  
+  
+  
+  
   CopyZipsFunction:
     Type: AWS::Lambda::Function
     Properties:
