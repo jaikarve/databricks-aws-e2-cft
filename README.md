@@ -56,13 +56,20 @@ AWS CloudFormation provides an "infrastructure-as-code" approach for deploying A
     * __QSS3BucketName__: S3 bucket for Quick Start assets. Use this if you want to customize the Quick Start. The bucket name can include numbers, lowercase letters, uppercase letters, and hyphens, but it cannot start or end with a hyphen (-).
     * __QSS3KeyPrefix__: S3 key prefix to simulate a directory for your deployment assets.  The prefix can include numbers, lowercase letters, uppercase letters, hyphens (-), and forward slashes (/). For more information, see https://docs.aws.amazon.com/AmazonS3/latest/dev/UsingMetadata.html.
 
+    The following parameters are used for tagging purposes:
+
+    * __ResourceOwner__: Used for metadata purposes to keep track of services.  Defaulted to __Databricks_E2__.
+    * __ResourcePrefix__: Prefix for tagging purposes.  Defaulted to __DatabricksAccountAPI__.
+
 Each of the resources in the CFT should have comments detailing their purpose.
 
 ## Execution
 
+The CFT is larger than the permitted size for using the `--template-body` parameter.  The CFT must be uploaded to a S3 bucket.
+
 To create the stack using the AWS CLI, use the following command, replacing `<aws_profile>` with a profile linked to your AWS account with admin access:
 
-`aws cloudformation create-stack --template-body file://Databricks_AWS_Setup.yaml --stack-name DatabricksAWSCFT --profile <aws_profile> --parameters file://params.json --capabilities CAPABILITY_NAMED_IAM`
+`aws cloudformation create-stack --template-url <path_to_template_file_in_s3> --stack-name DatabricksAWSCFT --profile <aws_profile> --parameters file://params.json --capabilities CAPABILITY_NAMED_IAM`
 
 Several AWS resources will be created.  In addition, several API calls are made through Lambda functions, executing the following steps:
 
@@ -95,5 +102,5 @@ To delete all resources in the stack using the AWS CLI, use the following comman
 
 This template is a work in progress.  Here is what is left to implement:
 
-  1. AWS PrivateEndpoint & PrivateLink configuration
+  1. Verify PrivateLink configuration is correct.
 
