@@ -58,5 +58,17 @@
     {
         "ParameterKey": "KeyReuseForClusterVolumes",
         "ParameterValue": "True"
+    },
+    {
+        "ParameterKey": "ResourceOwner",
+        "ParameterValue": "<OWNER_OF_RESOURCE_FOR_TAGGING_PURPOSES>"
+    },
+    {
+        "ParameterKey": "ResourcePrefix",
+        "ParameterValue": "<PREFIX_FOR_TAGGING_PURPOSES>"
+    },
+    {
+        "ParameterKey": "DBSPrivateLinkMode",
+        "ParameterValue": "<PRIVATE_LINK_SETUP_MODE_FOR_DATABRICKS_WORKSPACE>"
     }
 ]
